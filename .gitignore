@@ -1,0 +1,39 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and generated files
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+
+# Test, coverage, and notebook artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# Build artefacts
+build/
+dist/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local datasets and generated images
+/data/*
+!/data/.gitkeep
+/datasets/*
+!/datasets/.gitkeep
+
+# Training artefacts
+/checkpoints/
+/outputs/
+/runs/
+/wandb/
+.jax_cache/

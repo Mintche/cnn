@@ -1,0 +1,5 @@
+numpy>=1.24
+h5py>=3.8
+scikit-learn>=1.2
+jax>=0.4.30
+optax>=0.2.3
