@@ -148,17 +148,13 @@ An `npz` archive has no fixed shape or number of classes. Set `num_classes` from
 ## Development roadmap
 
 1. Implement the initial ConvNeXt V2 parameter tree. **Done.**
-2. Validate every initialized parameter shape and the total parameter count.
-3. Implement the ConvNeXt V2 block, downsampling, global average pooling, and classification head in `apply_cnn()`.
+2. Validate every initialized parameter shape and the total parameter count. **Done.**
+3. Implement the ConvNeXt V2 block, downsampling, global average pooling, and classification head in `apply_cnn()`. **Done.**
 4. Add shape-focused tests for individual blocks and the complete forward pass.
 5. Connect `init_cnn()`, `build_forward_fn()`, `create_state()`, and `fit()` in a small experiment script.
 6. Add one dataset adapter at a time and compare the same metrics across datasets.
 
 When creating an experiment, keep `ModelConfig.num_classes` synchronized with the loaded dataset. The recommended configurations above respect the spatial constraints of each known input resolution.
-
-## JAX notes
-
-Use explicit PRNG keys for initialization and batch shuffling. Keep model functions pure: pass parameters and inputs in, return arrays out, and avoid mutating state inside `jax.jit`-compiled functions. See the [official JAX documentation](https://docs.jax.dev/en/latest/) for `jax.jit`, `jax.grad`, `jax.vmap`, arrays, and explicit random keys.
 
 ## References
 

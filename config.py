@@ -24,9 +24,9 @@ class DataConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    depths: tuple[int, ...] = (3, 3, 9, 3)
-    dims: tuple[int, ...] = (96, 192, 384, 768)
-    num_classes: int = 1000
+    depths: tuple[int, ...] = (2, 2)
+    dims: tuple[int, ...] = (32, 64)
+    num_classes: int = 10
 
 
 @dataclass(frozen=True)

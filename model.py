@@ -150,20 +150,70 @@ def init_cnn(
     
     return params
 
+def layer_norm(
+        x: jax.Array,
+        norm: Params,
+) -> jax.Array:
+    xnorm = (x - jnp.mean(x,axis=-1, keepdims=True))/jnp.sqrt(jnp.var(x,axis=-1,keepdims=True) + 1e-8)
+    return xnorm * norm["gamma"] + norm["beta"]
+
+def drop_path(
+    key: jax.Array,
+    x: jax.Array,
+    drop_prob: float = 0.0,
+) -> jax.Array:
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    mask = jax.random.bernoulli(key, p=1.0 - drop_prob, shape=shape)
+    return (x / (1.0 - drop_prob)) * mask
+
 def apply_cnn(
     params: Params,
     images: jax.Array,
     training: bool = False,
     key: jax.Array | None = None,
 ) -> jax.Array:
-    """Compute class logits from a batch of channels-last images.
+    # stem
+    x = jax.lax.conv_general_dilated(images,params["stem"]["conv"]["w"],
+                                    dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
+                                    window_strides=(4, 4),padding='VALID') + params["stem"]["conv"]["b"]
+    x = layer_norm(x,params["stem"]["norm"])
 
-    TODO: implement the forward pass. Return logits with shape
-    ``(batch_size, num_classes)``; do not apply softmax here.
-    """
+    stages = len(params["stages"])
 
-    del params, images, training, key
-    raise NotImplementedError("Implement the CNN forward pass in model.py")
+    for i in range(stages):
+        for block in params["stages"][i]:
+            res = x
+            #Depthwise + LayerNorm
+            x = jax.lax.conv_general_dilated(x,block["dwconv"]["w"],padding=((3, 3), (3, 3))
+                                             ,dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
+                                             feature_group_count=x.shape[-1],window_strides=(1, 1)) + block["dwconv"]["b"]
+            x = layer_norm(x,block["norm"])
+            #Pointwise1
+            x = x@block["pwconv1"]["w"] + block["pwconv1"]["b"]
+            x = jax.nn.gelu(x)
+            # GRN (Global Response Normalization)
+            g = jnp.linalg.norm(x, axis=(1, 2), keepdims=True)
+            n = g / (jnp.mean(g, axis=-1, keepdims=True) + 1e-8)
+            x = block["grn"]["gamma"] * (x * n) + block["grn"]["beta"] + x
+            #Pointwise2
+            x = x@block["pwconv2"]["w"] + block["pwconv2"]["b"]
+            # Drop Path + Skip Connection
+            if training:
+                key, subkey = jax.random.split(key)
+                x = res + drop_path(subkey,x,drop_prob=0.1)
+            else:
+                x = res + x
+        if i != stages - 1:
+            #Downsample
+            x = layer_norm(x,params["downsamples"][i]["norm"])
+            x = jax.lax.conv_general_dilated(x,params["downsamples"][i]["conv"]["w"],
+                                             window_strides=(2, 2),padding='VALID',
+                                            dimension_numbers=('NHWC', 'HWIO', 'NHWC')) + params["downsamples"][i]["conv"]["b"]
+    # Head
+    x = jnp.mean(x, axis=(1, 2))
+    x = layer_norm(x,params["head"]["norm"])
+
+    return x @ params["head"]["linear"]["w"] + params["head"]["linear"]["b"]
 
 
 def build_forward_fn(config: ModelConfig) -> ForwardFn:
