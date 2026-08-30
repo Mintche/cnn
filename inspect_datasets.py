@@ -15,14 +15,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset",
-        choices=["digits", "hdf5", "npz", "cifar10"],
+        choices=["digits", "hdf5", "npz", "mnist", "fashion_mnist", "cifar10"],
         default="digits",
     )
     parser.add_argument(
         "--data-dir",
         type=Path,
         default=None,
-        help="HDF5 directory or NPZ file, depending on --dataset.",
+        help="HDF5 directory, NPZ file, or downloaded-dataset cache directory.",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(

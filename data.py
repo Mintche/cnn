@@ -14,10 +14,8 @@ import h5py
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas
-from sklearn.datasets import load_digits
+from sklearn.datasets import fetch_openml, load_digits
 from sklearn.model_selection import train_test_split
-from sklearn.datasets import fetch_openml
 
 if __package__:
     from .config import DatasetName
@@ -328,12 +326,15 @@ def load_cifar10_dataset(
         class_names,
     )
 
+
 def load_openml_image_dataset(
     name: str,
     data_dir: str | Path,
     validation_fraction: float = 0.1,
     seed: int = 0,
 ) -> DatasetBundle:
+    """Load MNIST or Fashion-MNIST from OpenML's local download cache."""
+
     specification = OPENML_DATASETS[name]
 
     images, labels = fetch_openml(
@@ -346,6 +347,8 @@ def load_openml_image_dataset(
 
     images = np.asarray(images, dtype=np.uint8).reshape(-1, 28, 28, 1)
     labels = np.asarray(labels, dtype=np.int32)
+    if images.shape[0] != 70_000 or labels.shape != (70_000,):
+        raise ValueError(f"Unexpected sample count for {name}: {images.shape[0]}")
 
     return _bundle(
         images[:60_000],
@@ -357,6 +360,7 @@ def load_openml_image_dataset(
         specification["class_names"],
     )
 
+
 def load_dataset(
     name: DatasetName,
     data_dir: str | Path | None = None,
@@ -366,8 +370,8 @@ def load_dataset(
 ) -> DatasetBundle:
     """Load a named dataset through a single stable entry point.
 
-    ``digits``, ``hdf5``, ``npz``, and ``cifar10`` are working adapters.
-    CIFAR-10 is downloaded from its official source on first use by default.
+    All configured names are working adapters. CIFAR-10, MNIST, and
+    Fashion-MNIST are downloaded and cached on first use.
     """
 
     if name == "digits":

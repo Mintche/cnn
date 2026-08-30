@@ -18,7 +18,14 @@ else:
     import train
 
 
-WORKING_DATASETS = ("digits", "hdf5", "npz", "cifar10","mnist", "fashion_mnist")
+WORKING_DATASETS = (
+    "digits",
+    "hdf5",
+    "npz",
+    "mnist",
+    "fashion_mnist",
+    "cifar10",
+)
 
 
 def model_config_for_dataset(
@@ -34,10 +41,8 @@ def model_config_for_dataset(
         depths, dims = (2, 2, 6, 2), (40, 80, 160, 320)
     elif dataset_name == "hdf5":
         depths, dims = (2, 2, 4, 2), (32, 64, 128, 256)
-    elif dataset_name == "mnist":
-            depths, dims = (2, 2, 4), (32, 64, 128)
-    elif dataset_name == "fashion_mnist":
-                depths, dims = (2, 2, 6, 2), (40, 80, 160, 320)
+    elif dataset_name in {"mnist", "fashion_mnist"}:
+        depths, dims = (2, 2, 4), (32, 64, 128)
     else:
         layouts = (
             ((2,), (32,)),
@@ -69,7 +74,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--data-dir",
         type=Path,
         default=config.DataConfig().data_dir,
-        help="HDF5 directory, NPZ file, or CIFAR-10 cache directory.",
+        help="HDF5 directory, NPZ file, or downloaded-dataset cache directory.",
     )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -78,7 +83,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--drop-path-rate", type=float, default=0.1)
     parser.add_argument("--validation-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--no-download", action="store_true")
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Require CIFAR-10 to be present in the local cache.",
+    )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--plot", type=Path, default=None)
     parser.add_argument("--show-plot", action="store_true")

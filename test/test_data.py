@@ -1,4 +1,4 @@
-"""Tests for dataset validation and the dependency-free CIFAR-10 adapter."""
+"""Tests for dataset validation and downloadable dataset adapters."""
 
 from __future__ import annotations
 
@@ -84,6 +84,31 @@ class Cifar10DatasetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             with self.assertRaisesRegex(FileNotFoundError, "Enable downloading"):
                 data.load_cifar10_dataset(temporary_directory, download=False)
+
+
+class OpenMlDatasetTests(unittest.TestCase):
+    def test_fashion_mnist_uses_the_official_split_without_network_access(self) -> None:
+        flat_image = np.zeros((1, 28 * 28), dtype=np.uint8)
+        images = np.broadcast_to(flat_image, (70_000, 28 * 28))
+        labels = np.tile(np.arange(10, dtype=np.int32), 7_000)
+        expected_bundle = object()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with (
+                patch.object(data, "fetch_openml", return_value=(images, labels)) as fetch,
+                patch.object(data, "_bundle", return_value=expected_bundle) as bundle,
+            ):
+                result = data.load_openml_image_dataset(
+                    "fashion_mnist",
+                    temporary_directory,
+                )
+
+        self.assertIs(result, expected_bundle)
+        self.assertEqual(fetch.call_args.kwargs["data_id"], 40996)
+        bundle_arguments = bundle.call_args.args
+        self.assertEqual(bundle_arguments[0].shape, (60_000, 28, 28, 1))
+        self.assertEqual(bundle_arguments[2].shape, (10_000, 28, 28, 1))
+        self.assertEqual(bundle_arguments[6][0], "T-shirt/top")
 
 
 class ImagePreparationTests(unittest.TestCase):
