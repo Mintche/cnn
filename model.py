@@ -1,9 +1,4 @@
-"""Functional CNN contract.
-
-This module intentionally does not contain a finished architecture. Implement
-the parameter tree and the forward pass here, then keep the training code
-agnostic to the model details.
-"""
+"""From-scratch functional ConvNeXt V2 implementation in JAX."""
 
 from __future__ import annotations
 
@@ -21,20 +16,22 @@ else:
 Params = Any
 ForwardFn = Callable[[Params, jax.Array, bool, jax.Array | None], jax.Array]
 
-#Based on the 2015 paper
 def kaiming_init(
     key: jax.Array,
     shape: tuple[int, ...],
     is_depthwise: bool = False,
     mode: str = "fan_in",
 ) -> jax.Array:
+    """Initialize linear or convolutional weights with Kaiming normal."""
+
+    if mode not in {"fan_in", "fan_out"}:
+        raise ValueError("mode must be 'fan_in' or 'fan_out'")
     if len(shape) == 2:
         fan_in, fan_out = shape
     elif len(shape) == 4:
         kh, kw, c_in, c_out = shape
         if is_depthwise:
-            fan_in = kh * kw
-            fan_out = kh * kw
+            fan_in = fan_out = kh * kw
         else:
             fan_in = kh * kw * c_in
             fan_out = kh * kw * c_out
@@ -99,8 +96,14 @@ def init_cnn(
     input_shape: tuple[int, int, int],  # (H, W, C_in)
     config: ModelConfig,
 ) -> dict:
-    if len(config.depths) != len(config.dims):
-        raise ValueError(f"depths and dims must have the same size")
+    if len(input_shape) != 3 or any(size <= 0 for size in input_shape):
+        raise ValueError("input_shape must contain positive (height, width, channels)")
+    minimum_side = 4 * 2 ** (len(config.depths) - 1)
+    if min(input_shape[:2]) < minimum_side:
+        raise ValueError(
+            f"{len(config.depths)} stages require image sides of at least "
+            f"{minimum_side} pixels"
+        )
     in_channels = input_shape[-1]
     c0 = config.dims[0]
     params = {}
@@ -154,7 +157,7 @@ def layer_norm(
         x: jax.Array,
         norm: Params,
 ) -> jax.Array:
-    xnorm = (x - jnp.mean(x,axis=-1, keepdims=True))/jnp.sqrt(jnp.var(x,axis=-1,keepdims=True) + 1e-8)
+    xnorm = (x - jnp.mean(x,axis=-1, keepdims=True))/jnp.sqrt(jnp.var(x,axis=-1,keepdims=True) + 1e-6)
     return xnorm * norm["gamma"] + norm["beta"]
 
 def drop_path(
@@ -162,6 +165,10 @@ def drop_path(
     x: jax.Array,
     drop_prob: float = 0.0,
 ) -> jax.Array:
+    if not 0.0 <= drop_prob < 1.0:
+        raise ValueError("drop_prob must be in [0, 1)")
+    if drop_prob == 0.0:
+        return x
     shape = (x.shape[0],) + (1,) * (x.ndim - 1)
     mask = jax.random.bernoulli(key, p=1.0 - drop_prob, shape=shape)
     return (x / (1.0 - drop_prob)) * mask
@@ -171,7 +178,17 @@ def apply_cnn(
     images: jax.Array,
     training: bool = False,
     key: jax.Array | None = None,
+    drop_path_rate: float = 0.0,
 ) -> jax.Array:
+    if training and key is None:
+        raise ValueError("A JAX PRNG key is required when training=True")
+    if not 0.0 <= drop_path_rate < 1.0:
+        raise ValueError("drop_path_rate must be in [0, 1)")
+    if images.ndim != 4:
+        raise ValueError("images must have shape (batch, height, width, channels)")
+    if images.shape[-1] != params["stem"]["conv"]["w"].shape[2]:
+        raise ValueError("The image channel count does not match the model stem")
+
     # stem
     x = jax.lax.conv_general_dilated(images,params["stem"]["conv"]["w"],
                                     dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
@@ -179,6 +196,8 @@ def apply_cnn(
     x = layer_norm(x,params["stem"]["norm"])
 
     stages = len(params["stages"])
+    total_blocks = sum(len(stage) for stage in params["stages"])
+    block_index = 0
 
     for i in range(stages):
         for block in params["stages"][i]:
@@ -192,17 +211,20 @@ def apply_cnn(
             x = x@block["pwconv1"]["w"] + block["pwconv1"]["b"]
             x = jax.nn.gelu(x)
             # GRN (Global Response Normalization)
-            g = jnp.linalg.norm(x, axis=(1, 2), keepdims=True)
-            n = g / (jnp.mean(g, axis=-1, keepdims=True) + 1e-8)
+            g = jnp.sqrt(jnp.sum(jnp.square(x), axis=(1, 2), keepdims=True) + 1e-6)
+            n = g / (jnp.mean(g, axis=-1, keepdims=True) + 1e-6)
             x = block["grn"]["gamma"] * (x * n) + block["grn"]["beta"] + x
             #Pointwise2
             x = x@block["pwconv2"]["w"] + block["pwconv2"]["b"]
             # Drop Path + Skip Connection
             if training:
                 key, subkey = jax.random.split(key)
-                x = res + drop_path(subkey,x,drop_prob=0.1)
+                denominator = max(total_blocks - 1, 1)
+                drop_prob = drop_path_rate * block_index / denominator
+                x = res + drop_path(subkey, x, drop_prob=drop_prob)
             else:
                 x = res + x
+            block_index += 1
         if i != stages - 1:
             #Downsample
             x = layer_norm(x,params["downsamples"][i]["norm"])
@@ -219,15 +241,19 @@ def apply_cnn(
 def build_forward_fn(config: ModelConfig) -> ForwardFn:
     """Bind model configuration to the training loop's forward-function API."""
 
-    del config
-
     def forward(
         params: Params,
         images: jax.Array,
         training: bool = False,
         key: jax.Array | None = None,
     ) -> jax.Array:
-        return apply_cnn(params, images, training, key)
+        return apply_cnn(
+            params,
+            images,
+            training,
+            key,
+            drop_path_rate=config.drop_path_rate,
+        )
 
     return forward
 

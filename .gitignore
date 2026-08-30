@@ -30,6 +30,7 @@ Thumbs.db
 !/data/.gitkeep
 /datasets/*
 !/datasets/.gitkeep
+/fig/*
 
 # Training artefacts
 /checkpoints/

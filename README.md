@@ -4,17 +4,15 @@ This repository contains a from-scratch ConvNeXt V2 implementation in JAX. Data 
 
 ## Current status
 
-The parameter initialization is implemented in [`model.py`](model.py). `init_cnn()` now builds the parameter pytree for:
+The model is trainable end to end. [`model.py`](model.py) implements the parameter pytree and forward pass for:
 
 - the 4 x 4 patchifying stem and its LayerNorm;
 - a configurable sequence of ConvNeXt V2 stages;
 - the LayerNorm and 2 x 2 convolution between consecutive stages;
 - each block's 7 x 7 depthwise convolution, LayerNorm, 4x channel-expansion MLP, Global Response Normalization (GRN), and projection;
-- the final LayerNorm and linear classification head.
+- GELU, GRN, residual connections, progressive stochastic depth, global average pooling, and the classification head.
 
-The default configuration follows the ConvNeXt V2-Tiny stage layout: depths `(3, 3, 9, 3)` and dimensions `(96, 192, 384, 768)`. The number of output classes is configurable.
-
-The forward pass in `apply_cnn()` is still intentionally unfinished, so the model cannot yet train or produce logits. Its next milestone is to apply the initialized operations in ConvNeXt V2 order, including GELU, GRN, residual connections, spatial downsampling, global average pooling, and the classification head.
+The default configuration is deliberately small: depths `(2, 2)` and dimensions `(32, 64)`, suitable for the built-in 8 x 8 digits dataset. The command-line experiment selects a practical configuration for each dataset and synchronizes the output classes automatically.
 
 The training module already defines the functional JAX interface expected by the model:
 
@@ -23,6 +21,22 @@ params -> forward(params, images, training, key) -> logits
 ```
 
 The training step uses `jax.value_and_grad`, `jax.jit`, immutable parameter state, and an Optax optimizer. It expects channels-last images with shape `(batch, height, width, channels)` and returns logits with shape `(batch, num_classes)`.
+
+### Deliberate implementation choice
+
+Weights use Kaiming-normal initialization. This is an intentional educational choice rather than an exact reproduction of the official ConvNeXt V2 code, which uses a truncated normal distribution with standard deviation 0.02. The architecture and parameter shapes are unchanged.
+
+Run a short experiment after installation:
+
+```bash
+python main.py --dataset digits --epochs 3
+```
+
+Save the learning curves without opening a window:
+
+```bash
+python main.py --dataset digits --epochs 3 --plot data/digits.png
+```
 
 ## Installation
 
@@ -57,11 +71,13 @@ python -m pip install -r requirements.txt
 |-- .gitignore              # Local and generated files excluded from Git
 |-- config.py               # Experiment, data, model, and training settings
 |-- data.py                 # Dataset adapters and JAX batch iterator
+|-- main.py                 # Runnable training experiment
 |-- model.py                # ConvNeXt V2 initialization and forward pass
 |-- train.py                # Generic JIT/autodiff training utilities
 |-- inspect_datasets.py     # Check a dataset adapter from the command line
 |-- requirements.txt        # Python dependencies
-|-- datasets/               # Local HDF5 datasets, ignored by Git
+|-- test/                   # Unit and end-to-end tests
+|-- datasets/               # Local datasets and CIFAR-10 cache, ignored by Git
 `-- data/                   # Local/generated data, ignored by Git
 ```
 
@@ -72,8 +88,9 @@ The following adapters are available now:
 - `digits`: scikit-learn's small handwritten-digits dataset; useful for a fast smoke test.
 - `hdf5`: local `trainset.hdf5` and `testset.hdf5` files containing `X_train`, `Y_train`, `X_test`, and `Y_test`.
 - `npz`: a local archive containing `X_train`, `y_train`, `X_test`, and `y_test`.
+- `cifar10`: the official Python archive, downloaded and MD5-verified on first use, then read from the local cache.
 
-MNIST, Fashion-MNIST, and CIFAR-10 are reserved extension points in `load_dataset()`. Add an adapter there while preserving the `DatasetBundle` interface; the training code should not need to know where the data came from.
+MNIST and Fashion-MNIST remain reserved extension points in `load_dataset()`.
 
 Inspect the built-in dataset before writing the model:
 
@@ -93,11 +110,17 @@ For a custom NPZ file:
 python inspect_datasets.py --dataset npz --data-dir path/to/dataset.npz
 ```
 
-Downloaded or generated data should go into `data/`. Local contents of `data/` and `datasets/` are ignored by Git; only their `.gitkeep` placeholders are versioned.
+Inspect or download CIFAR-10 (about 163 MB for the official compressed archive):
+
+```bash
+python inspect_datasets.py --dataset cifar10 --data-dir datasets
+```
+
+Use `--no-download` to require an already cached archive. Downloaded datasets go into `datasets/`; generated outputs can go into `data/`. Both directories are ignored by Git except for their `.gitkeep` placeholders.
 
 ## Recommended model configurations
 
-The default `ModelConfig` reproduces the ConvNeXt V2-Tiny stage sizes and is mainly appropriate for ImageNet-sized inputs. It is unnecessarily large for the datasets used in this project. The following smaller configurations are practical starting points, not tuned hyperparameters:
+The default `ModelConfig` is the small `digits` configuration. The following configurations are practical starting points, not tuned hyperparameters:
 
 | Dataset | Input shape | Classes | `depths` | `dims` | Parameters | Final spatial size |
 |---|---:|---:|---:|---:|---:|---:|
@@ -141,20 +164,15 @@ model_configs = {
 }
 ```
 
-The MNIST, Fashion-MNIST, and CIFAR-10 adapters are not implemented yet; these entries document the intended configurations for when they are added.
+The MNIST and Fashion-MNIST adapters are not implemented yet; their entries document the intended configurations.
 
 An `npz` archive has no fixed shape or number of classes. Set `num_classes` from the loaded `DatasetBundle`, and limit the number of stages according to the shortest image side. With the planned 4 x 4 stem and 2 x 2 downsampling layers, one, two, three, and four stages require minimum input sides of 4, 8, 16, and 32 pixels respectively. Suitable width progressions are `(32,)`, `(32, 64)`, `(32, 64, 128)`, and `(32, 64, 128, 256)`.
 
-## Development roadmap
+Run the complete test suite with:
 
-1. Implement the initial ConvNeXt V2 parameter tree. **Done.**
-2. Validate every initialized parameter shape and the total parameter count. **Done.**
-3. Implement the ConvNeXt V2 block, downsampling, global average pooling, and classification head in `apply_cnn()`. **Done.**
-4. Add shape-focused tests for individual blocks and the complete forward pass.
-5. Connect `init_cnn()`, `build_forward_fn()`, `create_state()`, and `fit()` in a small experiment script.
-6. Add one dataset adapter at a time and compare the same metrics across datasets.
-
-When creating an experiment, keep `ModelConfig.num_classes` synchronized with the loaded dataset. The recommended configurations above respect the spatial constraints of each known input resolution.
+```bash
+python -m unittest discover -s test -v
+```
 
 ## References
 

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import optax
+from matplotlib.ticker import MaxNLocator
+from tqdm import tqdm
 
 if __package__:
     from .data import DatasetSplit, iter_batches
@@ -72,6 +77,22 @@ def batch_metrics(logits: jax.Array, labels: jax.Array) -> dict[str, jax.Array]:
     return {"loss": loss, "accuracy": accuracy}
 
 
+@lru_cache(maxsize=16)
+def make_eval_step(forward_fn: ForwardFn):
+    """Build one compiled inference-and-metrics step."""
+
+    # Parameters remain an explicit argument so callers can evaluate any state.
+    @jax.jit
+    def eval_step_with_params(
+        params: Any,
+        batch: dict[str, jax.Array],
+    ) -> dict[str, jax.Array]:
+        logits = forward_fn(params, batch["images"], False, None)
+        return batch_metrics(logits, batch["labels"])
+
+    return eval_step_with_params
+
+
 def evaluate(
     params: Any,
     split: DatasetSplit,
@@ -83,9 +104,9 @@ def evaluate(
     total_loss = 0.0
     total_correct = 0.0
     total_samples = 0
+    eval_step = make_eval_step(forward_fn)
     for batch in iter_batches(split, batch_size, shuffle=False):
-        logits = forward_fn(params, batch["images"], False, None)
-        metrics = batch_metrics(logits, batch["labels"])
+        metrics = eval_step(params, batch)
         batch_size_actual = int(batch["labels"].shape[0])
         total_loss += float(metrics["loss"]) * batch_size_actual
         total_correct += float(metrics["accuracy"]) * batch_size_actual
@@ -98,6 +119,78 @@ def evaluate(
         "accuracy": total_correct / total_samples,
     }
 
+def plot_metrics(
+    history: list[dict[str, float]],
+    output_path: str | Path | None = None,
+    show: bool = True,
+) -> Path | None:
+    """Plot loss and validation accuracy from an epoch history.
+
+    When ``output_path`` is provided, its parent directory is created if
+    needed. Set ``show=False`` for non-interactive experiment campaigns.
+    """
+
+    if not history:
+        raise ValueError("Cannot plot an empty training history")
+
+    epochs = [int(metrics["epoch"]) for metrics in history]
+    train_loss = [metrics["train_loss"] for metrics in history]
+    validation_loss = [metrics["validation_loss"] for metrics in history]
+    validation_accuracy = [metrics["validation_accuracy"] for metrics in history]
+
+    figure, (loss_axis, accuracy_axis) = plt.subplots(
+        ncols=2,
+        figsize=(11, 4),
+        constrained_layout=True,
+    )
+
+    loss_axis.plot(
+        epochs,
+        train_loss,
+        color="tab:blue",
+        marker="o",
+        label="Training",
+    )
+    loss_axis.plot(
+        epochs,
+        validation_loss,
+        color="tab:orange",
+        marker="o",
+        label="Validation",
+    )
+    loss_axis.set(title="Loss", xlabel="Epoch", ylabel="Cross-entropy")
+    loss_axis.legend()
+    loss_axis.grid(alpha=0.25)
+    loss_axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    accuracy_axis.plot(
+        epochs,
+        validation_accuracy,
+        color="tab:green",
+        marker="o",
+        label="Validation",
+    )
+    accuracy_axis.set(
+        title="Accuracy",
+        xlabel="Epoch",
+        ylabel="Accuracy",
+        ylim=(0.0, 1.0),
+    )
+    accuracy_axis.legend()
+    accuracy_axis.grid(alpha=0.25)
+    accuracy_axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    saved_path = None
+    if output_path is not None:
+        saved_path = Path(output_path)
+        saved_path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(saved_path, dpi=160, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    plt.close(figure)
+    return saved_path
+
 
 def fit(
     state: TrainState,
@@ -108,16 +201,19 @@ def fit(
     epochs: int,
     batch_size: int,
     key: jax.Array,
+    show_progress: bool = True,
 ) -> tuple[TrainState, list[dict[str, float]]]:
     """Run the generic training loop and return state plus epoch history."""
 
     if epochs <= 0:
         raise ValueError("epochs must be positive")
+    if train_split.size == 0:
+        raise ValueError("Cannot train on an empty dataset")
 
     train_step = make_train_step(forward_fn, optimizer)
     history: list[dict[str, float]] = []
 
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs), disable=not show_progress):
         key, epoch_key = jax.random.split(key)
         epoch_loss = 0.0
         seen_samples = 0
@@ -136,7 +232,7 @@ def fit(
         )
         history.append(
             {
-                "epoch": float(epoch + 1),
+                "epoch": epoch + 1,
                 "train_loss": epoch_loss / seen_samples,
                 "validation_loss": validation_metrics["loss"],
                 "validation_accuracy": validation_metrics["accuracy"],

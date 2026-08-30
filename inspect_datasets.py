@@ -15,7 +15,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset",
-        choices=["digits", "hdf5", "npz", "mnist", "fashion_mnist", "cifar10"],
+        choices=["digits", "hdf5", "npz", "cifar10"],
         default="digits",
     )
     parser.add_argument(
@@ -25,9 +25,19 @@ def main() -> None:
         help="HDF5 directory or NPZ file, depending on --dataset.",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Require CIFAR-10 to be present in the local cache.",
+    )
     args = parser.parse_args()
 
-    dataset = load_dataset(args.dataset, args.data_dir, seed=args.seed)
+    dataset = load_dataset(
+        args.dataset,
+        args.data_dir,
+        seed=args.seed,
+        download=not args.no_download,
+    )
     print(f"Input shape: {dataset.input_shape}")
     print(f"Number of classes: {dataset.num_classes}")
     print(f"Train:      {dataset.train.size:>6} samples")

@@ -15,11 +15,17 @@ class DataConfig:
     """Configuration for one dataset experiment."""
     name: DatasetName = "digits"
     data_dir: Path = field(
-        default_factory=lambda: Path(__file__).resolve().parent / "data"
+        default_factory=lambda: Path(__file__).resolve().parent / "datasets"
     )
     validation_fraction: float = 0.1
     batch_size: int = 64
     seed: int = 0
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.validation_fraction < 1.0:
+            raise ValueError("validation_fraction must be between 0 and 1")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
 
 
 @dataclass(frozen=True)
@@ -27,6 +33,19 @@ class ModelConfig:
     depths: tuple[int, ...] = (2, 2)
     dims: tuple[int, ...] = (32, 64)
     num_classes: int = 10
+    drop_path_rate: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.depths or len(self.depths) != len(self.dims):
+            raise ValueError("depths and dims must be non-empty and have the same size")
+        if any(depth <= 0 for depth in self.depths):
+            raise ValueError("all stage depths must be positive")
+        if any(dim <= 0 for dim in self.dims):
+            raise ValueError("all stage dimensions must be positive")
+        if self.num_classes <= 0:
+            raise ValueError("num_classes must be positive")
+        if not 0.0 <= self.drop_path_rate < 1.0:
+            raise ValueError("drop_path_rate must be in [0, 1)")
 
 
 @dataclass(frozen=True)

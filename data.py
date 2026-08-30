@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import pickle
+import tarfile
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -10,13 +14,44 @@ import h5py
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pandas
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
+from sklearn.datasets import fetch_openml
 
 if __package__:
     from .config import DatasetName
 else:
     from config import DatasetName
+
+OPENML_DATASETS = {
+    "mnist": {
+        "data_id": 554,
+        "class_names": tuple(str(index) for index in range(10)),
+    },
+    "fashion_mnist": {
+        "data_id": 40996,
+        "class_names": (
+            "T-shirt/top",
+            "Trouser",
+            "Pullover",
+            "Dress",
+            "Coat",
+            "Sandal",
+            "Shirt",
+            "Sneaker",
+            "Bag",
+            "Ankle boot",
+        ),
+    },
+}
+
+CIFAR10_URL = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
+CIFAR10_FILENAME = "cifar-10-python.tar.gz"
+CIFAR10_MD5 = "c58f30108f718f92721af3b95e74349a"
+CIFAR10_ROOT = "cifar-10-batches-py"
+CIFAR10_TRAIN_BATCHES = tuple(f"data_batch_{index}" for index in range(1, 6))
+CIFAR10_TEST_BATCH = "test_batch"
 
 
 @dataclass(frozen=True)
@@ -44,7 +79,7 @@ class DatasetBundle:
 
 
 def _prepare_images(images: np.ndarray) -> np.ndarray:
-    """Convert images to float32 channels-last arrays in the [0, 1] range."""
+    """Convert [0, 1] or byte-range images to float32 channels-last arrays."""
 
     images = np.asarray(images)
     if images.ndim == 3:
@@ -53,8 +88,15 @@ def _prepare_images(images: np.ndarray) -> np.ndarray:
         raise ValueError("Images must have shape (N, H, W) or (N, H, W, C)")
 
     images = images.astype(np.float32)
-    if images.size and images.max() > 1:
-        images /= 255.0 if images.max() <= 255 else images.max()
+    if images.size:
+        minimum = float(images.min())
+        maximum = float(images.max())
+        if not np.isfinite(minimum) or not np.isfinite(maximum):
+            raise ValueError("Images must contain only finite values")
+        if minimum < 0 or maximum > 255:
+            raise ValueError("Images must use the [0, 1] or [0, 255] value range")
+        if maximum > 1:
+            images /= 255.0
     return images
 
 
@@ -90,6 +132,8 @@ def _split_train_validation(
     validation_fraction: float,
     seed: int,
 ) -> tuple[DatasetSplit, DatasetSplit]:
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be between 0 and 1")
     train_images, validation_images, train_labels, validation_labels = train_test_split(
         images,
         labels,
@@ -195,17 +239,135 @@ def load_npz_dataset(
         )
 
 
+def _file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _ensure_cifar10_archive(data_dir: Path, download: bool) -> Path:
+    """Return a verified CIFAR-10 archive, downloading it when permitted."""
+
+    archive_path = data_dir / CIFAR10_FILENAME
+    if archive_path.is_file() and _file_md5(archive_path) == CIFAR10_MD5:
+        return archive_path
+    if not download:
+        raise FileNotFoundError(
+            f"A valid CIFAR-10 archive was not found at {archive_path}. "
+            "Enable downloading or place the official archive there."
+        )
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    temporary_path = archive_path.with_suffix(archive_path.suffix + ".part")
+    print(f"Downloading CIFAR-10 to {archive_path} ...")
+    try:
+        urllib.request.urlretrieve(CIFAR10_URL, temporary_path)
+        if _file_md5(temporary_path) != CIFAR10_MD5:
+            raise RuntimeError("The downloaded CIFAR-10 archive has an invalid MD5 checksum")
+        temporary_path.replace(archive_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return archive_path
+
+
+def _read_cifar10_batch(
+    archive: tarfile.TarFile,
+    filename: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    member_name = f"{CIFAR10_ROOT}/{filename}"
+    member = archive.extractfile(member_name)
+    if member is None:
+        raise ValueError(f"CIFAR-10 archive is missing {member_name}")
+    payload = pickle.load(member, encoding="bytes")
+    flat_images = np.asarray(payload[b"data"], dtype=np.uint8)
+    labels = np.asarray(payload[b"labels"], dtype=np.int32)
+    if flat_images.ndim != 2 or flat_images.shape[1] != 3 * 32 * 32:
+        raise ValueError(f"Invalid CIFAR-10 image array in {filename}")
+    images = flat_images.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+    return images, labels
+
+
+def load_cifar10_dataset(
+    data_dir: str | Path,
+    validation_fraction: float = 0.1,
+    seed: int = 0,
+    download: bool = True,
+) -> DatasetBundle:
+    """Load CIFAR-10 from the official archive, downloading it once if needed."""
+
+    archive_path = _ensure_cifar10_archive(Path(data_dir), download)
+    with tarfile.open(archive_path, "r:gz") as archive:
+        train_parts = [
+            _read_cifar10_batch(archive, filename)
+            for filename in CIFAR10_TRAIN_BATCHES
+        ]
+        test_images, test_labels = _read_cifar10_batch(
+            archive,
+            CIFAR10_TEST_BATCH,
+        )
+        metadata_file = archive.extractfile(f"{CIFAR10_ROOT}/batches.meta")
+        if metadata_file is None:
+            raise ValueError("CIFAR-10 archive is missing its class metadata")
+        metadata = pickle.load(metadata_file, encoding="bytes")
+
+    train_images = np.concatenate([part[0] for part in train_parts])
+    train_labels = np.concatenate([part[1] for part in train_parts])
+    class_names = tuple(
+        name.decode("utf-8") if isinstance(name, bytes) else str(name)
+        for name in metadata[b"label_names"]
+    )
+    return _bundle(
+        train_images,
+        train_labels,
+        test_images,
+        test_labels,
+        validation_fraction,
+        seed,
+        class_names,
+    )
+
+def load_openml_image_dataset(
+    name: str,
+    data_dir: str | Path,
+    validation_fraction: float = 0.1,
+    seed: int = 0,
+) -> DatasetBundle:
+    specification = OPENML_DATASETS[name]
+
+    images, labels = fetch_openml(
+        data_id=specification["data_id"],
+        data_home=Path(data_dir) / "openml",
+        return_X_y=True,
+        as_frame=False,
+        parser="auto",
+    )
+
+    images = np.asarray(images, dtype=np.uint8).reshape(-1, 28, 28, 1)
+    labels = np.asarray(labels, dtype=np.int32)
+
+    return _bundle(
+        images[:60_000],
+        labels[:60_000],
+        images[60_000:],
+        labels[60_000:],
+        validation_fraction,
+        seed,
+        specification["class_names"],
+    )
+
 def load_dataset(
     name: DatasetName,
     data_dir: str | Path | None = None,
     validation_fraction: float = 0.1,
     seed: int = 0,
+    download: bool = True,
 ) -> DatasetBundle:
     """Load a named dataset through a single stable entry point.
 
-    ``digits``, ``hdf5``, and ``npz`` are provided as working adapters. The
-    other names are reserved extension points for MNIST, Fashion-MNIST, and
-    CIFAR-10 adapters.
+    ``digits``, ``hdf5``, ``npz``, and ``cifar10`` are working adapters.
+    CIFAR-10 is downloaded from its official source on first use by default.
     """
 
     if name == "digits":
@@ -218,9 +380,24 @@ def load_dataset(
         if data_dir is None:
             raise ValueError("data_dir must point to an NPZ file")
         return load_npz_dataset(data_dir, validation_fraction, seed)
-    if name in {"mnist", "fashion_mnist", "cifar10"}:
-        raise NotImplementedError(
-            f"No adapter is implemented yet for {name!r}. Add it here without changing the training API."
+    if name == "cifar10":
+        if data_dir is None:
+            data_dir = Path(__file__).resolve().parent / "datasets"
+        return load_cifar10_dataset(
+            data_dir,
+            validation_fraction,
+            seed,
+            download,
+        )
+    if name in {"mnist", "fashion_mnist"}:
+        if data_dir is None:
+            data_dir = Path(__file__).resolve().parent / "datasets"
+
+        return load_openml_image_dataset(
+            name,
+            data_dir,
+            validation_fraction,
+            seed,
         )
     raise ValueError(f"Unknown dataset: {name}")
 

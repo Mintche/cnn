@@ -1,7 +1,7 @@
 """Reusable building blocks for the JAX CNN experiments."""
 
 from .config import DataConfig, ExperimentConfig, ModelConfig, TrainingConfig
-from .data import DatasetBundle, DatasetSplit, load_dataset
+from .data import DatasetBundle, DatasetSplit, load_cifar10_dataset, load_dataset
 
 __all__ = [
     "DataConfig",
@@ -10,5 +10,6 @@ __all__ = [
     "ExperimentConfig",
     "ModelConfig",
     "TrainingConfig",
+    "load_cifar10_dataset",
     "load_dataset",
 ]

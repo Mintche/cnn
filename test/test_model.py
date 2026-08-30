@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from config import ModelConfig
-from model import apply_cnn, init_cnn
+from model import apply_cnn, build_forward_fn, init_cnn
 
 
 class InitCnnTests(unittest.TestCase):
@@ -49,10 +49,14 @@ class InitCnnTests(unittest.TestCase):
             np.testing.assert_array_equal(np.asarray(first_leaf), np.asarray(second_leaf))
 
     def test_depths_and_dims_must_have_the_same_length(self) -> None:
-        config = ModelConfig(depths=(1, 1), dims=(4,), num_classes=2)
-
         with self.assertRaisesRegex(ValueError, "depths and dims"):
-            init_cnn(jax.random.PRNGKey(0), (16, 16, 3), config)
+            ModelConfig(depths=(1, 1), dims=(4,), num_classes=2)
+
+    def test_spatial_shape_must_support_every_stage(self) -> None:
+        config = ModelConfig(depths=(1, 1, 1), dims=(4, 8, 16), num_classes=2)
+
+        with self.assertRaisesRegex(ValueError, "at least 16 pixels"):
+            init_cnn(jax.random.PRNGKey(0), (8, 8, 1), config)
 
 
 class ApplyCnnTests(unittest.TestCase):
@@ -89,6 +93,25 @@ class ApplyCnnTests(unittest.TestCase):
         self.assertEqual(first.shape, (2, self.config.num_classes))
         self.assertTrue(bool(jnp.all(jnp.isfinite(first))))
         np.testing.assert_array_equal(np.asarray(first), np.asarray(second))
+
+    def test_training_requires_a_random_key(self) -> None:
+        with self.assertRaisesRegex(ValueError, "PRNG key"):
+            apply_cnn(self.params, self.images, training=True, key=None)
+
+    def test_configured_drop_path_uses_the_random_key(self) -> None:
+        config = ModelConfig(
+            depths=(1, 1),
+            dims=(4, 8),
+            num_classes=3,
+            drop_path_rate=0.5,
+        )
+        forward = build_forward_fn(config)
+        images = jnp.tile(self.images, (16, 1, 1, 1))
+
+        first = forward(self.params, images, True, jax.random.PRNGKey(1))
+        second = forward(self.params, images, True, jax.random.PRNGKey(2))
+
+        self.assertFalse(np.array_equal(np.asarray(first), np.asarray(second)))
 
     def test_forward_pass_is_jittable_and_differentiable(self) -> None:
         @jax.jit
