@@ -13,7 +13,7 @@ DatasetName = Literal["digits", "hdf5", "npz", "mnist", "fashion_mnist", "cifar1
 @dataclass(frozen=True)
 class DataConfig:
     """Configuration for one dataset experiment."""
-    name: DatasetName = "digits"
+    name: DatasetName = "hf5"
     data_dir: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent / "datasets"
     )

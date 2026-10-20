@@ -157,7 +157,7 @@ def layer_norm(
         x: jax.Array,
         norm: Params,
 ) -> jax.Array:
-    xnorm = (x - jnp.mean(x,axis=-1, keepdims=True))/jnp.sqrt(jnp.var(x,axis=-1,keepdims=True) + 1e-6)
+    xnorm = (x - jnp.mean(x,axis=-1, keepdims=True))/jnp.sqrt(jnp.var(x,axis=-1,keepdims=True) + 1e-12)
     return xnorm * norm["gamma"] + norm["beta"]
 
 def drop_path(
