@@ -17,7 +17,7 @@ The current experiment classifies cats and dogs from 128 × 128 RGB images.
 The notebook downloads the data with KaggleHub, skips unreadable images,
 and creates training, validation, and test splits.
 The network has three stages with depths `(2, 2)` and dimensions
-`(64, 128)`, totaling 416,674 parameters.
+`(64, 128)`, totalingaround 390k parameters.
 
 ## Usage
 
